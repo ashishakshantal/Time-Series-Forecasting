@@ -1,0 +1,259 @@
+To read the ".RDdata" files into R,use the following R code as reference
+```{r}
+setwd("F:/P&D_Model Building/20170909_Time series_Lecture")
+load("timeseries.RData")
+ecom <- data
+#View(ecom)
+
+```
+To see the number of products and variables that are part of this data set, Use the below R code.
+```{r}
+names(ecom)
+summary(ecom$Condition)
+dim(ecom)
+```
+# to get count of the number of unique products in this data set.
+```{r}
+length(unique(ecom$TitleKey))
+```
+there are 107 products. Since building the time series on all products is not possible,let us build on a particular product. So you need to subset/filter the transactions of a product (say Books) the variable "Title key" and of specific condition (New/old).
+```{r}
+ecomBooks=ecom[which(ecom$TitleKey==4302628& ecom$Condition=="Good"),]
+dim(ecomBooks)
+head(ecomBooks)
+names(ecomBooks)
+str(ecomBooks)
+tail(ecomBooks)
+```
+we noticed that there are multiple price points on the same day (Because, they are e-com comp they can change price dynamically!).in order to build the time series models, it is required to have only one data point per unit time reference (Say Day, Week or Month) Hence we aggregate the data day wise.
+
+```{r}
+install.packages("sqldf")
+library(sqldf) # to write SQL like commands in R to aggregate the data.
+ecomBooks.Day <- sqldf("select Date,min(Price) as MIN_PRICE from ecomBooks group by Date")
+
+#Altcode <- aggregate(data2$ Price, by=list(data2$ Date),FUN=min)
+```
+
+change the variable type into Date format
+```{r}
+ecomBooks.Day$Date=as.Date(ecomBooks.Day$Date,format="%Y-%m-%d")
+head(ecomBooks.Day)
+tail(ecomBooks.Day)
+str(ecomBooks.Day)
+#View(ecomBooks.Day)
+```
+
+
+Missing values: You will not see "NA" in the data sets. The tricky part is, the missing values in the time series are quite not obvious. You can't see "NA" directly, however, if you please look at the date field, do you notice that data for few dates are missing (say, Jan 2nd and Jan 6th).
+
+
+handling the missing values. In this case, we are not ignoring the missing values but wants to replace them. To do so, first create a date field which consists of continuous sequence of dates. We then check against this with the current price data and find out the missing dates.
+
+
+```{r}
+# To find the minimum of the dates
+minDate=min(as.Date(ecomBooks.Day$Date,format="%Y-%m-%d"))
+# To find the maximum of the dates 
+maxDate =max(as.Date(ecomBooks.Day$Date,format="%Y-%m-%d"))
+# generating the series of dates 
+seq <- data.frame("dateRange"=seq(minDate,maxDate,by="days"))
+#seq
+```
+
+Now we join this variable to the current data to see the missing dates
+```{r}
+# left joining to see the missing values for the dates. all.x will do the left join."all.y" will do right join.
+ecomBooks.Day2= merge(seq,ecomBooks.Day,by.x="dateRange",by.y="Date",all.x=T)
+head(ecomBooks.Day2)
+```
+
+Our goal is to replace the missing values with it's either proceeding value or succeeding or both. Here we do it with R function na.locf(),
+
+
+```{r}
+install.packages("zoo")
+library("zoo")
+na.locf(ecomBooks.Day2$MIN_PRICE)
+ecomBooks.Day2$MIN_PRICE<-(na.locf(ecomBooks.Day2$MIN_PRICE) + rev(na.locf(rev(ecomBooks.Day2$MIN_PRICE))))/2
+#the above line replaces the missing values with the average of the preceeding value and the succeeding values
+```
+
+By looking at the summary, it looks like the price is not changing much over the days. So, let us try to aggregate the price by week instead of days. To do this, add the week column corresponding to each date. The format" %Y.%W" adds another column to our data showing the week number in which each date falls into.
+
+```{r}
+ecomBooks.Day2$WEEK <- as.numeric(format(ecomBooks.Day2$dateRange, format="%Y.%W"))
+head(ecomBooks.Day2)
+# Now aggregating to weekly data
+ecomBooksDay2 <- ecomBooks.Day2 
+head(ecomBooks2Day2) 
+library(sqldf)
+ecomBooks.Week <- sqldf("select WEEK as WEEK,min(MIN_PRICE) as MIN_PRICE from ecomBooksDay2 group by WEEK")
+```
+
+#Dividing data as Train & Test
+```{r}
+Train <- ecomBooks.Week[which(ecomBooks.Week$WEEK<=2013.47),] 
+Test <-ecomBooks.Week[which(ecomBooks.Week$WEEK>2013.47),]
+```
+
+Note that our target variable "price" is a numeric vector. We are now using this to build the models. However, we need to communicate to R that this is a weekly data. The "ts" function gets this job done. The parameter "frequency" 52 indicates the weeks (because we are reading weekly data). If you are reading monthly data, you can change it to 12, for day-wise data you need to specify 365 and 4 it is quaterly data
+
+
+```{r}
+Price <- ts(Train$MIN_PRICE, frequency =52)
+#to visualize the data
+
+plot(Price,type="l",lwd=3,col="blue",xlab="week",ylab="Price", main="Time series plot for Book-Price for every week")
+```
+
+Before we building the models, let us focus on visualization. We first Decompose the data in to Trend and seasonality. Looking at the graph, this data consists of trend and seasonality. Therefore, this time series said be non-stationary. You can also understand the strength of both trend and seasonality by looking at plot ACF and PACF graphs.
+
+```{r}
+pricedecomp <- decompose(Price)
+plot(pricedecomp)
+
+```
+
+Here is the R code to draw the ACF and PACF graphs.
+# par mfrow is to show 2 graphs side by side. You could change it to say c(2,4) to see 4 graphs in 2 rows. C(1,3) to see the 3 graphs in a single row.
+
+
+```{r}
+par(mfrow=c(1,2))
+acf(Price,lag=30)
+pacf(Price,lag=30)
+
+#frequency 1 to view the graph even more better
+Price1 <- ts(Train$MIN_PRICE, frequency=1)
+par(mfrow = c(1,2))
+acf(Price1, lag =30)
+pacf(Price1, lag = 30)
+par(mfrow=c(1,2)) 
+plot(diff(Price1,lag=1),type="l")
+plot(diff(Price1,lag=2),type="l")
+```
+
+Since we understand that the time series has trend, let us build the simple moving average model.
+# The library TTR stands for Technical trading rules.
+
+```{r}
+install.packages("TTR")
+library(TTR) 
+fitsma <- SMA(Price,n=2) 
+length(fitsma)
+length(Price)
+```
+Let us see how this model performs. You could choose any of the error metrics. Here we used MAPE to compute the error
+
+```{r}
+smaMape <- mean(abs((Price[2:length(Price)]-fitsma[2:length(Price)]) /Price[2:length(Price)]))
+smaMape
+```
+
+```{r}
+library(TTR) 
+fitsma <- SMA(Price,n=3) 
+length(fitsma)
+length(Price)
+smaMape1 <- mean(abs((Price[3:length(Price)]-fitsma[3:length(Price)]) /Price[3:length(Price)]))
+smaMape1
+
+```
+fit weighted moving averages and compute the error metrics 
+```{r}
+fitwma<- WMA(Price,n=2,1:2)
+fitwma
+```
+
+Build exponential moving average model and evaluate it. Compare this value with value you obtained for SMA model.
+
+```{r}
+fitEma <- EMA(Price, n = 2) 
+emaMape <- mean(abs((Price[2:length(Price)]-fitEma[2:length(Price)]) /Price[2:length(Price)]))
+emaMape
+```
+visualizing the models built so far
+```{r}
+par(mfrow=c(2,2))
+plot(Train, type="l", col="black") 
+plot(fitsma, col="red", lwd=2, type = "l")
+plot(fitwma, col="blue", type = "l") 
+plot(fitEma, col="brown", type = "l")
+
+```
+Building the Holt winter's model taking only Trend component.
+
+```{r}
+holtpriceforecast <- HoltWinters(Train$MIN_PRICE, beta=TRUE, gamma=FALSE)
+# Look the fitted or forecasted values 
+head(holtpriceforecast$fitted)
+```
+
+Build another Holt winter's model taking both Trend component and Seasonality (additive).
+
+```{r}
+priceholtforecast <- HoltWinters(Price, beta=TRUE, gamma=TRUE, seasonal="additive")
+# Look the fitted or forecasted values . Did you notice the 
+head(priceholtforecast$fitted)
+
+```
+
+Let us evaluate the algorithm on the Train data. You need to compute MAPE. Convert the output you got from "priceholtforecast$fitted" and store in a data frame and then take the "xhat" column. This column contains the predictions on the training data
+
+```{r}
+# Getting the predictions on Training data
+holtforecastTrain <- data.frame(priceholtforecast$fitted)
+holtforecastTrainpredictions <- holtforecastTrain$xhat
+head(holtforecastTrainpredictions)
+# To get the predictions on Test Data, you can use function "forecast.Holt". "h" indicates the number of future weeks (or whatever be your reference time period, say months, quarters, etc.,) for which you want to get the predictions 
+
+install.packages("forecast")
+library("forecast")
+priceforecast <- forecast(priceholtforecast, h=8)
+
+```
+
+```{r}
+# Model with no trend and no seasonality. 
+model1 <- arima(Price,c(0,0,0)) 
+model1
+model2 <- arima(Price,c(0,1,0)) 
+model2
+model3 <- arima(Price,c(0,2,0)) 
+model3
+model4 <- arima(Price,c(1,1,1))
+model4
+par(mfrow=c(2,2))
+plot(model1$residuals,ylim=c(-50,50))
+plot(model2$residuals,ylim=c(-50,50))
+plot(model3$residuals,ylim=c(-50,50))
+plot(model4$residuals,ylim=c(-50,50))
+
+```
+apply autoARIMA
+
+```{r}
+library("forecast")
+MODEL_ARIMA <- auto.arima(Price, ic='aic')
+summary(MODEL_ARIMA)
+
+```
+
+
+# Lest us look at the acf and Pacf graphs to check if # there are patterns 
+```{r}
+acf(as.numeric(forecasts$residuals) ,lag.max = 20, main = "Residuals ACF plot")
+pacf(as.numeric(forecasts$residuals) ,lag.max = 20, main = "Residuals PACF plot")
+
+```
+
+
+```{r}
+# getting the predictions on the Test Data from model1.
+pricearimaforecasts1 <- forecast(model1, h=4)
+pricearimaforecasts1
+# getting the predictions on the Test Data from model3 
+pricearimaforecasts3 <- forecast(model3, h=4)
+pricearimaforecasts3
+```
